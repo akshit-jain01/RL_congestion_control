@@ -57,8 +57,8 @@ class CongestionEnv(gym.Env):
             self.history = []
 
         self.history.append((throughput, delay, reward))
+        print(f"Step {self.step_count} | CWND: {window} KB | Throughput: {throughput:.2f} Mbps | Delay: {delay:.2f} ms | Loss: {loss}")
         
-
         return state, reward, False, False, {}
 
     def reset(self, seed=None, options=None):
