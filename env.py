@@ -8,7 +8,7 @@ class CongestionEnv(gym.Env):
         super().__init__()
         
         # state: throughput, delay
-        self.observation_space = gym.spaces.Box(low=0, high=1.0, shape=(2,), dtype = np.float32)
+        self.observation_space = gym.spaces.Box(low=-1, high=1.0, shape=(5,), dtype=np.float32)
         
         # actions: decrease, same, increase window
         self.action_space = gym.spaces.Discrete(3)
@@ -16,12 +16,16 @@ class CongestionEnv(gym.Env):
         self.step_count = 0
         self.last_delay = 0
         
-        self.window_sizes = [64, 128, 256, 512, 1024]  # KB
+        self.window_sizes = [64, 128, 256, 512, 1024, 2048, 4096]  # KB
         self.idx = 2  # start at 256KB
 
     def step(self, action):
-        # adjust window index
+        # ----adjust window index
         self.step_count+=1
+
+        # ----map actions
+        action = int(action)
+        action_map = {0: "↓ DECREASE", 1: "→ SAME", 2: "↑ INCREASE"}
         if action == 0:
             self.idx = max(0, self.idx - 1)
         elif action == 2:
@@ -29,41 +33,73 @@ class CongestionEnv(gym.Env):
 
         window = self.window_sizes[self.idx]
 
+        # ---- get metrics
         throughput = self.get_throughput(window)
-
         delay = self.get_delay()
-        print(f"Delay: {delay:.2f} ms")
-
-        # Normalize values
-        norm_throughput = throughput / 50
-        norm_delay = delay / 200
-
-        norm_throughput = min(norm_throughput, 1.0)
-        norm_delay = min(norm_delay, 1.0)
-
-        # reward
         loss = getattr(self, "last_loss", 0)
 
-        # reward = norm_throughput - norm_delay - 0.001 * loss
-        reward = norm_throughput - 0.5 * norm_delay  
+        #---- simulate congestion
+        # if window >= 512:
+        #     delay += (window / 1024) * np.random.uniform(5, 20)
 
-        # reward = 1.5 * norm_throughput - norm_delay     #high throughput bias
-        # reward = norm_throughput - 0.5 * norm_delay - 0.001 * loss     #less delay penalty
+        # if window >= 512:
+        #     loss = np.random.binomial(1, (window / 1024) * 0.3)
+        # else:
+        #     loss = 0
+        self.last_loss = loss
 
-        # Normalized state
-        state = np.array([norm_throughput, norm_delay], dtype=np.float32)
+        #---- compute trends
+        delta_delay = delay - self.last_delay
+        self.last_delay = delay
 
-        if not hasattr(self, "history"):
-            self.history = []
-
-        self.history.append((throughput, delay, reward))
-<<<<<<< HEAD
-        print(f"Step {self.step_count} | CWND: {window} KB | Throughput: {throughput:.2f} Mbps | Delay: {delay:.2f} ms | Loss: {loss}")
+        # ----Normalize values
+        norm_throughput = min(throughput / 10, 1.0)
         
-=======
+        norm_delay = (delay - 100) / 50
+        norm_delay = np.clip(norm_delay, 0, 1)
+        norm_delta_delay = np.clip(delta_delay / 50, -1, 1)
+
+        norm_loss = min(loss / 5, 1.0)
+
+        norm_cwnd = self.idx / (len(self.window_sizes) - 1)
+
         
 
->>>>>>> d48128a05da800fffc350a7b890acf256d829e5a
+        #---- reward
+
+        # reward = (1.5 * norm_throughput- 1.0 * norm_delay- 1.5 * norm_loss- 0.3 * abs(norm_delta_delay))
+        reward = (3.0 * norm_throughput- 1.5 * norm_delay- 0.05 * norm_loss - 0.2 * abs(norm_delta_delay))
+
+        #---- extra penalties
+        if delta_delay > 30:
+            reward -= 0.01
+
+        reward += 0.05 * norm_cwnd
+        
+
+        if action != self.last_action:
+            reward -= 0.03
+        self.last_action = action
+
+        reward -= 0.005 * abs(action - 1)
+
+        reward += 0.01 * np.random.rand()
+            
+        #----    Normalized state
+        state = np.array([norm_throughput,norm_delay,norm_loss,norm_cwnd,norm_delta_delay], dtype=np.float32)
+
+        #---- logging & printing
+        # if not hasattr(self, "history"):
+        #     self.history = []
+
+        self.history.append((window, throughput, delay, loss, reward))
+
+        print(
+            f"Step {self.step_count} | {action_map[action]} | "
+            f"CWND: {window} KB | "
+            f"Thr: {throughput:.2f} | Delay: {delay:.2f} | Loss: {loss}"
+        )
+
         return state, reward, False, False, {}
 
     def reset(self, seed=None, options=None):
@@ -72,13 +108,15 @@ class CongestionEnv(gym.Env):
         self.step_count = 0
         self.last_delay = 0
         self.last_loss = 0
-        return np.array([0.0, 0.0], dtype=np.float32), {}
+        self.last_action = 1  # assume "SAME"
+        self.history = []
+        return np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32), {}
 
     def get_throughput(self, window):
         cmd = [
             "iperf3",
             "-c", "10.0.0.1",
-            "-t", "1",
+            "-t", "8",
             "-w", f"{window}K"
         ]
 
@@ -113,8 +151,5 @@ class CongestionEnv(gym.Env):
 
 
 #iperf3 -c 10.0.0.1 -t 10    throughput
-<<<<<<< HEAD
 #ping -c 5 10.0.0.1     delay
-=======
-#ping -c 5 10.0.0.1     delay
->>>>>>> d48128a05da800fffc350a7b890acf256d829e5a
+
